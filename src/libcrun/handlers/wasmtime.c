@@ -43,6 +43,7 @@
 #  include <wasi.h>
 #  include <wasmtime.h>
 #  include <wasmtime/component/component.h>
+#  include <wasmtime/component/val.h>
 #  include <wasmtime/component/func.h>
 #  include <wasmtime/component/instance.h>
 #  include <wasmtime/component/linker.h>
@@ -281,7 +282,7 @@ libwasmtime_exec (void *cookie, libcrun_container_t *container arg_unused,
       const wasmtime_component_linker_t *linker,
       wasmtime_context_t *context,
       const wasmtime_component_t *component,
-      wasmtime_component_instance_t **instance_out);
+      wasmtime_component_instance_t *instance_out);
   wasmtime_component_export_index_t *(*wasmtime_component_get_export_index) (
       wasmtime_component_t *component,
       wasmtime_component_export_index_t *index,
@@ -367,7 +368,7 @@ libwasmtime_exec (void *cookie, libcrun_container_t *container arg_unused,
     }
 
   // Init Component with linker
-  wasmtime_component_instance_t *component_inst = NULL;
+  wasmtime_component_instance_t component_inst = {};
   fprintf (stderr, "init component\n");
   err = wasmtime_component_linker_instantiate (comp_linker, context, component, &component_inst);
   if (err != NULL)
@@ -376,21 +377,36 @@ libwasmtime_exec (void *cookie, libcrun_container_t *container arg_unused,
       wasmtime_error_delete (err);
       error (EXIT_FAILURE, 0, "failed to instantiate component: %.*s", (int) error_message.size, error_message.data);
     }
-  assert (component_inst);
 
   // Get the run func
   fprintf (stderr, "get func index?!\n");
-  wasmtime_component_export_index_t *run_index = wasmtime_component_instance_get_export_index (component_inst, context, NULL, "wasi:cli/run@0.2.0", strlen ("wasi:cli/run@0.2.0"));
-  assert (run_index);
+  wasmtime_component_export_index_t *run_world_index = wasmtime_component_instance_get_export_index (
+      &component_inst,
+      context,
+      NULL,
+      "wasi:cli/run@0.2.0",
+      strlen ("wasi:cli/run@0.2.0"));
+  assert (run_world_index != NULL);
+  wasmtime_component_export_index_t *run_func_index = wasmtime_component_instance_get_export_index (
+      &component_inst,
+      context,
+      run_world_index,
+      "run",
+      strlen ("run"));
+  assert (run_func_index != NULL);
 
   fprintf (stderr, "get func itself\n");
-  wasmtime_component_func_t *run_func = NULL;
-  bool found_run = wasmtime_component_instance_get_func (component_inst, context, run_index, run_func);
-  assert (found_run);
+  wasmtime_component_func_t run_func = {};
+  bool found_run = wasmtime_component_instance_get_func (&component_inst, context, run_func_index, &run_func);
+  if (! found_run)
+    {
+      error (EXIT_FAILURE, 0, "could not get func");
+    }
 
   // Call the func
   fprintf (stderr, "call func\n");
-  err = wasmtime_component_func_call (run_func, context, NULL, 0, NULL, 0);
+  wasmtime_component_val_t result = {};
+  err = wasmtime_component_func_call (&run_func, context, NULL, 0, &result, 1);
   if (err != NULL)
     {
       wasmtime_error_message (err, &error_message);
@@ -400,7 +416,8 @@ libwasmtime_exec (void *cookie, libcrun_container_t *container arg_unused,
 
   // Cleanup
   fprintf (stderr, "cleanup\n");
-  wasmtime_component_export_index_delete (run_index);
+  wasmtime_component_export_index_delete (run_func_index);
+  wasmtime_component_export_index_delete (run_world_index);
   wasmtime_component_delete (component);
   wasmtime_component_linker_delete (comp_linker);
   wasmtime_store_delete (store);
